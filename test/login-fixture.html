@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>UCSD SSO helper fixture</title>
+</head>
+<body>
+  <button class="btn-sso-shibboleth" data-provider-name="Shibboleth" type="button">
+    Single Sign On | UC San Diego | Click Here
+  </button>
+  <script>
+    window.chrome = {
+      storage: {
+        local: {
+          get: async () => ({ autoLogin: true, lastSsoAttemptAt: 0 }),
+          set: async (value) => { window.fixtureStorage = value; }
+        }
+      }
+    };
+    document.querySelector(".btn-sso-shibboleth").addEventListener("click", () => {
+      document.body.dataset.ssoClicked = "true";
+    });
+  </script>
+  <script src="../login.js"></script>
+</body>
+</html>

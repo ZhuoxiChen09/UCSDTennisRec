@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UCSD Tennis Watcher</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <img class="brand-mark" src="icons/icon48.png" width="42" height="42" alt="">
+    <div>
+      <h1>Court Watcher</h1>
+      <p>UCSD Recreation tennis</p>
+    </div>
+  </header>
+
+  <main>
+    <div class="status-strip">
+      <span id="runState" class="run-state" data-state="idle">Idle</span>
+      <span id="pageState">Checking the booking page…</span>
+    </div>
+
+    <div class="primary-controls" aria-label="Watcher controls">
+      <button id="start" class="start-button" type="button"><span aria-hidden="true">✓</span> Book 2 hours now</button>
+      <button id="stop" class="stop-button" type="button"><span aria-hidden="true">■</span> Stop</button>
+    </div>
+
+    <button id="openLogin" class="login-button" type="button">
+      <span aria-hidden="true">↗</span> Open UCSD Recreation &amp; continue with SSO
+    </button>
+    <label class="login-option">
+      <input id="autoLogin" type="checkbox" checked>
+      Automatically click UCSD’s official Single Sign-On button
+    </label>
+
+    <section class="schedule-card">
+      <div class="section-heading">
+        <h2>Reservation date</h2>
+        <span>exact date to watch</span>
+      </div>
+      <select id="targetDate" class="full-width"></select>
+    </section>
+
+    <section class="court-policy-card">
+      <div class="section-heading">
+        <h2>Fixed court order</h2>
+        <span>automatic priority</span>
+      </div>
+      <div class="court-priority" aria-label="All North courts, then Muir 4, 3, 2, 1, and 5">
+        <strong>All North courts</strong>
+        <span aria-hidden="true">→</span>
+        <span>Muir 4</span><span>Muir 3</span><span>Muir 2</span><span>Muir 1</span><span>Muir 5</span>
+      </div>
+      <p class="excluded-note">Warren and Coast are always excluded and will never be checked.</p>
+      <p class="fixed-window-note"><strong>Two-hour rule:</strong> adjacent hours on the same court first. If none exist, it may use two nearby courts within North or within Muir. North and Muir are never mixed.</p>
+    </section>
+
+    <section>
+      <div class="section-heading">
+        <h2>Acceptable one-hour slots</h2>
+        <span id="hourCount">choose consecutive hours</span>
+      </div>
+      <div id="hourList" class="hour-list" role="group" aria-label="Preferred one-hour time slots"></div>
+    </section>
+
+    <section class="schedule-card">
+      <div class="section-heading">
+        <h2>Midnight monitoring window</h2>
+        <span>fixed 10-minute limit</span>
+      </div>
+      <div class="fixed-window" aria-label="Monitoring runs from midnight until 12:10 AM">
+        <div><span>Start</span><strong>12:00 AM</strong></div>
+        <span class="window-arrow" aria-hidden="true">→</span>
+        <div><span>Hard stop</span><strong>12:10 AM</strong></div>
+      </div>
+      <p class="fixed-window-note">Checks one court every 3 seconds. It books only when two selected, consecutive hours form an acceptable pair.</p>
+    </section>
+
+    <section id="bookingTools" class="booking-tools" hidden>
+      <div class="section-heading">
+        <h2>Existing reservations</h2>
+        <span>safe cancellation review</span>
+      </div>
+      <select id="existingBooking" class="full-width" aria-label="Existing reservation"></select>
+      <button id="reviewCancellation" class="review-button" type="button">Review cancellation</button>
+      <p>Opens UCSD’s cancellation dialog for the selected reservation. You must click <strong>Yes, Cancel</strong> yourself.</p>
+    </section>
+
+    <div id="status" class="status" aria-live="polite"></div>
+
+    <button id="arm" class="arm-button" type="button">Book 2 hours at midnight</button>
+
+    <p class="safety">Clicking either Book 2 Hours button can create two real UCSD reservations. The extension confirms hour one before attempting hour two; if another player takes hour two in between, it reports the one-hour partial result and stops. UCSD Recreation remains the authority on account limits. Passwords, Duo, and final cancellation remain manual.</p>
+  </main>
+  <script src="lib/booking-core.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
