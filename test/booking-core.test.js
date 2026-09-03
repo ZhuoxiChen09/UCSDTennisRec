@@ -6,6 +6,9 @@ const Core = require("../lib/booking-core.js");
 
 test("normalizes court names from the UCSD page", () => {
   assert.equal(Core.normalizeCourtName(" Tennis |    North 10 "), "Tennis | North 10");
+  assert.equal(Core.courtNamesMatch("North 6", "Tennis | North 6"), true);
+  assert.equal(Core.courtNamesMatch("Tennis - North 6", "Tennis | North 6"), true);
+  assert.equal(Core.courtNamesMatch("North 6", "North 7"), false);
 });
 
 test("parses AM and PM booking start times", () => {
@@ -58,6 +61,27 @@ test("does not turn nonconsecutive selected hours into a pair", () => {
   ], [420, 540]), null);
 });
 
+test("falls back to any consecutive pair in court priority order", () => {
+  const slots = [
+    { court: "Tennis | North 7", slotText: "7:00 AM - 8:00 AM" },
+    { court: "Tennis | North 7", slotText: "8:00 AM - 9:00 AM" },
+    { court: "Tennis | North 6", slotText: "3:00 PM - 4:00 PM" },
+    { court: "Tennis | North 6", slotText: "4:00 PM - 5:00 PM" }
+  ];
+  const pair = Core.findAnyConsecutivePair(slots, ["Tennis | North 6", "Tennis | North 7"]);
+  assert.deepEqual(pair.map((slot) => slot.court), ["Tennis | North 6", "Tennis | North 6"]);
+  assert.deepEqual(pair.map((slot) => Core.parseStartMinutes(slot.slotText)), [900, 960]);
+});
+
+test("falls back to nearby same-area courts when no court has both hours", () => {
+  const pair = Core.findAnyConsecutivePair([
+    { court: "Tennis | North 8", slotText: "5:00 PM - 6:00 PM" },
+    { court: "Tennis | North 9", slotText: "6:00 PM - 7:00 PM" },
+    { court: "Tennis | Muir 1", slotText: "7:00 PM - 8:00 PM" }
+  ], ["Tennis | North 8", "Tennis | North 9", "Tennis | Muir 1"]);
+  assert.deepEqual(pair.map((slot) => slot.court), ["Tennis | North 8", "Tennis | North 9"]);
+});
+
 test("allows consecutive hours on different courts in the same area", () => {
   const northPair = Core.findSameAreaCourtPair([
     { court: "Tennis | North 6", slotText: "7:00 - 8:00 AM" },
@@ -85,6 +109,21 @@ test("prefers nearby same-area courts and never mixes North with Muir", () => {
     { court: "Tennis | Muir 4", slotText: "8:00 - 9:00 AM" }
   ], [420, 480]);
   assert.equal(rejected, null);
+});
+
+test("ranks an exact missing hour on the original or nearest same-area court", () => {
+  const ranked = Core.rankExactHourFallback([
+    { court: "Tennis | Muir 1", slotText: "7:00 PM - 8:00 PM" },
+    { court: "Tennis | North 9", slotText: "7:00 PM - 8:00 PM" },
+    { court: "Tennis | North 7", slotText: "7:00 PM - 8:00 PM" },
+    { court: "Tennis | North 6", slotText: "7:00 PM - 8:00 PM" },
+    { court: "Tennis | North 7", slotText: "8:00 PM - 9:00 PM" }
+  ], { court: "Tennis | North 6" }, "7:00 PM - 8:00 PM", [
+    "Tennis | North 6", "Tennis | North 7", "Tennis | North 9", "Tennis | Muir 1"
+  ]);
+  assert.deepEqual(ranked.map((slot) => slot.court), [
+    "Tennis | North 6", "Tennis | North 7", "Tennis | North 9"
+  ]);
 });
 
 test("chooses the newest released date", () => {
@@ -144,40 +183,40 @@ test("enforces the fixed polling interval without requiring court input", () => 
     preferredStartMinutes: [420, 480],
     targetDate: "2026-09-01",
     windowStartSeconds: 0,
-    windowEndSeconds: 600
+    windowEndSeconds: 300
   });
   assert.equal(invalid.errors.length, 1);
 });
 
-test("accepts the fixed three-second check and ten-minute midnight window", () => {
+test("accepts the fixed one-second check and five-minute midnight window", () => {
   const valid = Core.validateSettings({
     selectedCourts: [],
-    pollSeconds: 3,
+    pollSeconds: 1,
     preferredStartMinutes: [420, 480],
     autoBook: true,
     targetDate: "2026-09-01",
     windowStartSeconds: 0,
-    windowEndSeconds: 600
+    windowEndSeconds: 300
   });
   assert.deepEqual(valid.errors, []);
-  assert.equal(valid.settings.pollSeconds, 3);
+  assert.equal(valid.settings.pollSeconds, 1);
   assert.equal(valid.settings.autoBook, true);
 });
 
 test("requires at least one selected consecutive two-hour block", () => {
   const invalid = Core.validateSettings({
     selectedCourts: [],
-    pollSeconds: 3,
+    pollSeconds: 1,
     preferredStartMinutes: [420, 540],
     autoBook: true,
     targetDate: "2026-09-01",
     windowStartSeconds: 0,
-    windowEndSeconds: 600
+    windowEndSeconds: 300
   });
   assert.match(invalid.errors.join(" "), /two consecutive one-hour time slots/);
 });
 
-test("rejects polling intervals other than the fixed three seconds", () => {
+test("rejects polling intervals other than the fixed one second", () => {
   const invalid = Core.validateSettings({
     selectedCourts: ["Tennis | North 10"],
     pollSeconds: 5,
@@ -185,21 +224,21 @@ test("rejects polling intervals other than the fixed three seconds", () => {
     autoBook: true,
     targetDate: "2026-09-01",
     windowStartSeconds: 0,
-    windowEndSeconds: 600
+    windowEndSeconds: 300
   });
-  assert.match(invalid.errors.join(" "), /every 3 seconds/);
+  assert.match(invalid.errors.join(" "), /every 1 second/);
 });
 
-test("rejects any monitoring window other than midnight to 12:10 AM", () => {
+test("rejects any monitoring window other than midnight to 12:05 AM", () => {
   const invalid = Core.validateSettings({
     selectedCourts: ["Tennis | North 10"],
-    pollSeconds: 3,
+    pollSeconds: 1,
     preferredStartMinutes: [420, 540],
     targetDate: "2026-09-01",
     windowStartSeconds: 0,
-    windowEndSeconds: 300
+    windowEndSeconds: 600
   });
-  assert.match(invalid.errors.join(" "), /12:10 AM/);
+  assert.match(invalid.errors.join(" "), /12:05 AM/);
   assert.equal(Core.UCSD_DAILY_BOOKING_LIMIT, 2);
 });
 
@@ -214,6 +253,12 @@ test("computes the three-day target and next local midnight", () => {
   assert.equal(next.getMinutes(), 0);
 });
 
+test("computes the next release date from the latest released date", () => {
+  assert.equal(Core.addDaysToDateKey("2026-09-06", 1), "2026-09-07");
+  assert.equal(Core.addDaysToDateKey("2026-12-31", 1), "2027-01-01");
+  assert.equal(Core.addDaysToDateKey("not-a-date", 1), null);
+});
+
 test("computes the next selected monitoring-window start", () => {
   const beforeWindow = new Date(2026, 7, 29, 0, 0, 30);
   const sameDay = Core.nextWindowStart(beforeWindow, 60);
@@ -225,7 +270,7 @@ test("computes the next selected monitoring-window start", () => {
   assert.equal(nextDay.getDate(), 30);
 
   const insideWindow = new Date(2026, 7, 29, 0, 2, 0);
-  const immediate = Core.nextWindowStart(insideWindow, 0, 600);
+  const immediate = Core.nextWindowStart(insideWindow, 0, 300);
   assert.equal(immediate.getDate(), 29);
   assert.equal(immediate.getMinutes(), 2);
   assert.ok(immediate.getTime() > insideWindow.getTime());

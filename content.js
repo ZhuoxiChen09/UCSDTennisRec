@@ -1,10 +1,29 @@
 "use strict";
 
-const CONTENT_PROTOCOL_VERSION = 12;
+const CONTENT_PROTOCOL_VERSION = 17;
 const Core = globalThis.UcsdBookingCore;
 const BOOKING_PATH_RE = /^\/booking\/([0-9a-f-]+)\/?$/i;
 let watchController = null;
 let overlay = null;
+
+function pageRunContext() {
+  const isLiveUcsd = location.protocol === "https:" && location.hostname === "rec.ucsd.edu";
+  const isVerifiedSimulator = location.protocol === "http:" && location.hostname === "127.0.0.1" &&
+    document.body?.dataset.ucsdEnvironment === "simulator";
+  if (isLiveUcsd) return { environment: "production", testCase: null };
+  if (isVerifiedSimulator) {
+    return { environment: "simulator", testCase: document.body.dataset.testCase || "unknown" };
+  }
+  return { environment: "unsupported", testCase: null };
+}
+
+function requireSupportedEnvironment() {
+  const context = pageRunContext();
+  if (context.environment === "unsupported") {
+    throw new Error("This local page is not the verified UCSD Tennis simulator. The watcher stopped without booking.");
+  }
+  return context;
+}
 
 function sleep(milliseconds, signal) {
   return new Promise((resolve, reject) => {
@@ -42,10 +61,12 @@ function setOverlay(state, title, detail) {
 }
 
 async function reportStatus(state, message, extra = {}) {
-  setOverlay(state, state === "found" ? "Court found" : "Court watcher", message);
+  const context = pageRunContext();
+  const environmentLabel = context.environment === "simulator" ? " · TEST" : "";
+  setOverlay(state, state === "found" ? `Court found${environmentLabel}` : `Court watcher${environmentLabel}`, message);
   await chrome.runtime.sendMessage({
     type: "STATUS",
-    status: { state, message, ...extra, protocolVersion: CONTENT_PROTOCOL_VERSION }
+    status: { state, message, ...extra, ...context, protocolVersion: CONTENT_PROTOCOL_VERSION }
   }).catch(() => undefined);
 }
 
@@ -78,6 +99,10 @@ function parseFacilities(html) {
 
 function parseAvailableSlots(html, court, date) {
   const doc = new DOMParser().parseFromString(html, "text/html");
+  const simulatorMarker = doc.querySelector("[data-ucsd-test-case]")?.dataset.ucsdTestCase;
+  if (simulatorMarker && pageRunContext().environment === "simulator") {
+    document.body.dataset.testCase = simulatorMarker;
+  }
   return [...doc.querySelectorAll('button[id^="btnOpenSlot_"]')]
     .filter((button) => !button.disabled && Core.normalizeSpace(button.textContent).toLowerCase() === "book now")
     .map((button) => ({
@@ -108,20 +133,32 @@ async function fetchUpcomingBookings(signal) {
 }
 
 async function fetchPartial(url, signal) {
-  const response = await fetch(url, {
+  const request = () => fetch(url, {
     credentials: "include",
     cache: "no-store",
     headers: { "X-Requested-With": "XMLHttpRequest" },
     signal
   });
+  let response = await request();
   if (response.redirected && /\/account\/signin/i.test(response.url)) {
     throw new Error("Your UCSD session expired. Sign in again, then restart the watcher.");
+  }
+  if (response.status === 429 || response.status === 403 || response.status >= 500) {
+    const retryAfterSeconds = Number(response.headers.get("Retry-After"));
+    const fallbackMs = response.status >= 500 ? 2_000 : 5_000;
+    const backoffMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+      ? Math.min(retryAfterSeconds * 1000, 30_000)
+      : fallbackMs;
+    await reportStatus("watching", `UCSD returned HTTP ${response.status}; backing off for ${Math.round(backoffMs / 1000)} seconds before one retry.`);
+    await sleep(backoffMs, signal);
+    response = await request();
   }
   if (!response.ok) throw new Error(`UCSD Recreation returned HTTP ${response.status}.`);
   return response.text();
 }
 
 async function getPageInfo() {
+  const context = requireSupportedEnvironment();
   const id = bookingId();
   if (!id) throw new Error("This is not a tennis booking detail page.");
   const currentCourt = Core.normalizeCourtName(
@@ -162,6 +199,7 @@ async function getPageInfo() {
   }
   return {
     ok: true,
+    ...context,
     protocolVersion: CONTENT_PROTOCOL_VERSION,
     bookingUrl: location.href,
     currentCourt,
@@ -211,7 +249,7 @@ function elementIsVisible(element) {
 
 function bookingMatchesSlot(booking, match) {
   return booking.dateKey === match.dateKey &&
-    Core.normalizeCourtName(booking.court) === Core.normalizeCourtName(match.court) &&
+    Core.courtNamesMatch(booking.court, match.court) &&
     Core.normalizeSpace(booking.slotText) === Core.normalizeSpace(match.slotText);
 }
 
@@ -246,7 +284,59 @@ function pairDescription(pair) {
   return pair.map((match) => `${match.slotText} on ${match.court}`).join(" + ");
 }
 
-async function bookTwoHourPair(pair, signal) {
+async function scanExactHourFallback(firstMatch, missingMatch, recoveryContext, signal) {
+  const matches = [];
+  for (const court of recoveryContext.selectedCourts) {
+    const slotsHtml = await fetchPartial(
+      `/booking/${recoveryContext.bookingId}/slots/${court.id}/${recoveryContext.selectedDate.year}/${recoveryContext.selectedDate.month}/${recoveryContext.selectedDate.day}`,
+      signal
+    );
+    matches.push(...parseAvailableSlots(slotsHtml, court, recoveryContext.selectedDate));
+  }
+  return Core.rankExactHourFallback(
+    matches,
+    firstMatch,
+    missingMatch.slotText,
+    recoveryContext.selectedCourts.map((court) => court.name)
+  );
+}
+
+async function recoverMissingSecondHour(firstMatch, missingMatch, knownBookings, confirmedBookings, recoveryContext, signal) {
+  await reportStatus(
+    "watching",
+    `${missingMatch.slotText} disappeared on ${missingMatch.court}. Rechecking every eligible court for that exact consecutive hour…`,
+    { confirmedBookings, missingMatch }
+  );
+  const candidates = await scanExactHourFallback(firstMatch, missingMatch, recoveryContext, signal);
+  for (const candidate of candidates) {
+    const targetButton = await revealMatch(candidate, signal);
+    if (!targetButton) continue;
+    await reportStatus(
+      "booking",
+      `Recovering hour 2 of 2: ${candidate.court}, ${candidate.dateText}, ${candidate.slotText}…`,
+      { confirmedBookings, currentMatch: candidate }
+    );
+    const participantIdsBefore = new Set(knownBookings.map((booking) => booking.participantId));
+    targetButton.click();
+    const result = await waitForBookingConfirmation(candidate, participantIdsBefore, signal);
+    if (result.outcome === "booked") {
+      const recoveredPair = [firstMatch, candidate];
+      const recoveredBookings = [...confirmedBookings, result.confirmed];
+      await reportStatus(
+        "booked",
+        `Two consecutive hours confirmed after switching courts: ${pairDescription(recoveredPair)}.`,
+        { pair: recoveredPair, confirmedBookings: recoveredBookings, recovered: true }
+      );
+      return { ok: true, pair: recoveredPair, confirmedBookings: recoveredBookings, recovered: true };
+    }
+    if (!["unavailable", "failed"].includes(result.outcome)) {
+      return { ok: false, terminalOutcome: result.outcome };
+    }
+  }
+  return { ok: false, exhausted: true };
+}
+
+async function bookTwoHourPair(pair, signal, recoveryContext) {
   const confirmedBookings = [];
   let knownBookings;
   try {
@@ -255,16 +345,24 @@ async function bookTwoHourPair(pair, signal) {
     throw new Error("UCSD's reservation list could not be read, so the extension stopped before making a two-booking attempt.");
   }
 
-  await chrome.runtime.sendMessage({ type: "FOUND", pair, autoBook: true });
+  await chrome.runtime.sendMessage({ type: "FOUND", pair, autoBook: true, ...requireSupportedEnvironment() });
   for (let index = 0; index < pair.length; index += 1) {
     const match = pair[index];
     const targetButton = await revealMatch(match, signal);
     if (!targetButton) {
-      const message = index === 0
-        ? "The two-hour block disappeared before its first hour could be selected. No reservation was made."
-        : `Only the first hour was confirmed. The second hour on ${match.court} disappeared before it could be selected.`;
-      await reportStatus(index === 0 ? "action" : "partial", message, { pair, confirmedBookings });
-      return { ok: false, partial: index > 0, pair, confirmedBookings };
+      if (index === 0) {
+        await reportStatus("watching", "That two-hour block disappeared before booking began. Continuing the all-court search.", { pair });
+        return { ok: false, retryable: true, pair, confirmedBookings };
+      }
+      const recovery = await recoverMissingSecondHour(
+        pair[0], match, knownBookings, confirmedBookings, recoveryContext, signal
+      );
+      if (recovery.ok) return recovery;
+      const detail = recovery.exhausted
+        ? "Every eligible court was rechecked, but the exact consecutive second hour was gone."
+        : "UCSD did not provide a safe, verifiable result for the replacement hour.";
+      await reportStatus("partial", `The first hour is confirmed. ${detail}`, { pair, confirmedBookings });
+      return { ok: false, partial: true, pair, confirmedBookings, outcome: recovery.terminalOutcome || "unavailable" };
     }
 
     await reportStatus(
@@ -282,9 +380,26 @@ async function bookTwoHourPair(pair, signal) {
         "needs-action": "UCSD needs a CAPTCHA or confirmation in this tab.",
         unverified: "UCSD did not expose a verifiable reservation result in time. Check this tab before trying again."
       };
-      const prefix = index === 0
-        ? "No part of the two-hour block was confirmed."
-        : "The first hour is confirmed, but the second hour was not booked.";
+      if (index === 0 && ["unavailable", "failed"].includes(result.outcome)) {
+        await reportStatus("watching", `The first candidate was lost. Continuing the all-court search. ${outcomeMessages[result.outcome]}`, {
+          pair, currentMatch: match, outcome: result.outcome
+        });
+        return { ok: false, retryable: true, pair, confirmedBookings, outcome: result.outcome };
+      }
+      if (index === 1 && ["unavailable", "failed"].includes(result.outcome)) {
+        const recovery = await recoverMissingSecondHour(
+          pair[0], match, knownBookings, confirmedBookings, recoveryContext, signal
+        );
+        if (recovery.ok) return recovery;
+        const detail = recovery.exhausted
+          ? "Every eligible court was rechecked, but the exact consecutive second hour was gone."
+          : outcomeMessages[recovery.terminalOutcome] || "No safe replacement could be verified.";
+        await reportStatus("partial", `The first hour is confirmed. ${detail}`, {
+          pair, currentMatch: match, confirmedBookings, outcome: recovery.terminalOutcome || result.outcome
+        });
+        return { ok: false, partial: true, pair, confirmedBookings, outcome: recovery.terminalOutcome || result.outcome };
+      }
+      const prefix = index === 0 ? "No part of the two-hour block was confirmed." : "The first hour is confirmed, but the second hour was not booked.";
       await reportStatus(index === 0 ? "action" : "partial", `${prefix} ${outcomeMessages[result.outcome]}`, {
         pair,
         currentMatch: match,
@@ -324,6 +439,7 @@ async function maybeReviewCancellation() {
 }
 
 async function runWatch(settings, source) {
+  const context = requireSupportedEnvironment();
   if (watchController) watchController.abort();
   watchController = new AbortController();
   const { signal } = watchController;
@@ -343,7 +459,8 @@ async function runWatch(settings, source) {
   let selectedDate = null;
   let selectedCourts = null;
   let courtIndex = 0;
-  let cycleMatches = [];
+  let cyclePreferredMatches = [];
+  let cycleAllMatches = [];
 
   if (stopAt <= Date.now()) {
     await reportStatus("stopped", "The selected monitoring window has already ended.");
@@ -351,9 +468,10 @@ async function runWatch(settings, source) {
     return { ok: true, expired: true };
   }
 
+  const runLabel = context.environment === "simulator" ? `TEST ${context.testCase}` : "LIVE UCSD";
   await reportStatus("watching", source === "schedule"
-    ? `Release watch started for ${desired}.`
-    : `Watching selected reservation date ${desired}.`);
+    ? `${runLabel}: release watch started for ${desired}.`
+    : `${runLabel}: watching selected reservation date ${desired}.`);
 
   try {
     while (!signal.aborted && Date.now() < stopAt) {
@@ -381,36 +499,68 @@ async function runWatch(settings, source) {
           `/booking/${id}/slots/${court.id}/${selectedDate.year}/${selectedDate.month}/${selectedDate.day}`,
           signal
         );
-        const matches = parseAvailableSlots(slotsHtml, court, selectedDate)
+        const availableMatches = parseAvailableSlots(slotsHtml, court, selectedDate);
+        const preferredMatches = availableMatches
           .filter((slot) => Core.isPreferredSlot(slot.slotText, config.preferredStartMinutes));
-        cycleMatches.push(...matches);
-        const sameCourtPair = Core.findConsecutiveSlotPair(matches, config.preferredStartMinutes);
+        cyclePreferredMatches.push(...preferredMatches);
+        cycleAllMatches.push(...availableMatches);
+        const sameCourtPair = Core.findConsecutiveSlotPair(preferredMatches, config.preferredStartMinutes);
         if (sameCourtPair) {
-          const result = await bookTwoHourPair(sameCourtPair, signal);
-          watchController = null;
-          return result;
+          const result = await bookTwoHourPair(sameCourtPair, signal, {
+            bookingId: id, selectedDate, selectedCourts
+          });
+          if (!result.retryable) {
+            watchController = null;
+            return result;
+          }
+          cyclePreferredMatches = [];
+          cycleAllMatches = [];
         }
         courtIndex = (courtIndex + 1) % selectedCourts.length;
         if (courtIndex === 0) {
+          let preferredPairWasLost = false;
           const sameAreaPair = Core.findSameAreaCourtPair(
-            cycleMatches,
+            cyclePreferredMatches,
             config.preferredStartMinutes,
             selectedCourts.map((candidate) => candidate.name)
           );
           if (sameAreaPair) {
-            const result = await bookTwoHourPair(sameAreaPair, signal);
-            watchController = null;
-            return result;
+            const result = await bookTwoHourPair(sameAreaPair, signal, {
+              bookingId: id, selectedDate, selectedCourts
+            });
+            if (!result.retryable) {
+              watchController = null;
+              return result;
+            }
+            preferredPairWasLost = true;
           }
-          cycleMatches = [];
+          const fallbackPair = preferredPairWasLost ? null : Core.findAnyConsecutivePair(
+              cycleAllMatches,
+              selectedCourts.map((candidate) => candidate.name)
+            );
+          if (fallbackPair) {
+            await reportStatus(
+              "watching",
+              `Preferred hours are unavailable. Booking the best remaining consecutive two-hour block: ${pairDescription(fallbackPair)}.`
+            );
+            const result = await bookTwoHourPair(fallbackPair, signal, {
+              bookingId: id, selectedDate, selectedCourts
+            });
+            if (!result.retryable) {
+              watchController = null;
+              return result;
+            }
+          }
+          cyclePreferredMatches = [];
+          cycleAllMatches = [];
         }
-        await reportStatus("watching", `Check ${scanNumber}: no acceptable two-hour pair on ${court.name}; next check in ${config.pollSeconds}s.`);
+        await reportStatus("watching", `Check ${scanNumber}: scanning ${court.name} for the preferred pair, then any consecutive two-hour fallback; next check in ${config.pollSeconds}s.`);
       }
 
       await sleep(config.pollSeconds * 1000, signal);
     }
 
-    if (!signal.aborted) await reportStatus("stopped", "Watch window ended without an acceptable consecutive two-hour block.");
+    if (!signal.aborted) await reportStatus("stopped", "Watch window ended without any consecutive two-hour block.");
     watchController = null;
     return { ok: true };
   } catch (error) {
@@ -449,6 +599,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
 chrome.runtime.sendMessage({
   type: "CONTENT_READY",
-  protocolVersion: CONTENT_PROTOCOL_VERSION
+  protocolVersion: CONTENT_PROTOCOL_VERSION,
+  ...pageRunContext()
 }).catch(() => undefined);
 maybeReviewCancellation().catch(() => undefined);

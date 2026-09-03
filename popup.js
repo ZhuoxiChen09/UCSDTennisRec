@@ -1,24 +1,32 @@
 "use strict";
 
-const BUILD_VERSION = "0.7.2";
-const CONTENT_PROTOCOL_VERSION = 12;
+const BUILD_VERSION = "0.8.8";
+const CONTENT_PROTOCOL_VERSION = 17;
 const Core = globalThis.UcsdBookingCore;
 const DEFAULT_BOOKING_URL = "https://rec.ucsd.edu/booking/9f19b678-58ce-4dfc-bd78-7166bde9e265";
+const TEST_SIMULATOR_URL = "http://127.0.0.1:4173/booking/9f19b678-58ce-4dfc-bd78-7166bde9e265";
+const TEST_SIMULATOR_HEALTH_URL = "http://127.0.0.1:4173/api/state";
 const elements = {
   arm: document.querySelector("#arm"),
   autoLogin: document.querySelector("#autoLogin"),
   bookingTools: document.querySelector("#bookingTools"),
   existingBooking: document.querySelector("#existingBooking"),
+  environmentBanner: document.querySelector("#environmentBanner"),
+  environmentLabel: document.querySelector("#environmentLabel"),
   hourCount: document.querySelector("#hourCount"),
   hourList: document.querySelector("#hourList"),
   openLogin: document.querySelector("#openLogin"),
+  openSimulator: document.querySelector("#openSimulator"),
   pageState: document.querySelector("#pageState"),
   runState: document.querySelector("#runState"),
   reviewCancellation: document.querySelector("#reviewCancellation"),
   start: document.querySelector("#start"),
+  startLabel: document.querySelector("#startLabel"),
   status: document.querySelector("#status"),
   stop: document.querySelector("#stop"),
-  targetDate: document.querySelector("#targetDate")
+  targetDate: document.querySelector("#targetDate"),
+  testCaseLabel: document.querySelector("#testCaseLabel"),
+  safety: document.querySelector("#safety")
 };
 
 let pageInfo = null;
@@ -82,6 +90,26 @@ function showRunState(state) {
   elements.runState.textContent = labels[state] || "Idle";
 }
 
+function isSupportedBookingUrl(value) {
+  return /^https:\/\/rec\.ucsd\.edu\/booking\/[0-9a-f-]+\/?$/i.test(value || "") ||
+    /^http:\/\/127\.0\.0\.1(?::\d+)?\/booking\/[0-9a-f-]+\/?$/i.test(value || "");
+}
+
+function renderEnvironment(info) {
+  const isSimulator = info.environment === "simulator";
+  elements.environmentBanner.dataset.environment = isSimulator ? "simulator" : "production";
+  elements.environmentLabel.textContent = isSimulator ? "TEST SIMULATOR" : "LIVE UCSD";
+  elements.testCaseLabel.textContent = isSimulator
+    ? `Test case: ${String(info.testCase || "unknown").replaceAll("-", " ")}`
+    : "Real UCSD Recreation reservations";
+  elements.startLabel.textContent = isSimulator ? "Run test: book 2 hours" : "Start midnight watcher";
+  elements.arm.hidden = !isSimulator;
+  elements.arm.textContent = "Arm simulator for midnight";
+  elements.safety.textContent = isSimulator
+    ? "TEST MODE: bookings affect only the local simulator's in-memory data. Selected hours are preferred; if unavailable, the extension tries any consecutive two-hour block. No request is sent to UCSD Recreation."
+    : "LIVE UCSD: Start Midnight Watcher can be clicked early. It waits without availability polling until 12:00:00 AM, then checks through 12:05 AM and may create two real reservations. Selected hours are preferred, with any consecutive two-hour block as fallback. UCSD Recreation remains the authority on account limits. Passwords, Duo, and final cancellation remain manual.";
+}
+
 function formatReservationDate(dateKey) {
   const [year, month, day] = dateKey.split("-").map(Number);
   return new Date(year, month - 1, day, 12).toLocaleDateString(undefined, {
@@ -90,11 +118,12 @@ function formatReservationDate(dateKey) {
 }
 
 function renderDates(dates, savedDate) {
-  const nextStart = Core.nextWindowStart(new Date(), 0, Core.MAX_WINDOW_END_SECONDS);
-  const nextReleaseDate = Core.desiredDateKey(nextStart, 3);
-  const choices = new Map([[nextReleaseDate, `Next release · ${formatReservationDate(nextReleaseDate)}`]]);
+  const latestReleasedDate = dates.map((date) => date.dateKey).filter(Core.isValidDateKey).sort().at(-1);
+  const nextReleaseDate = Core.addDaysToDateKey(latestReleasedDate, 1) ||
+    Core.desiredDateKey(Core.nextWindowStart(new Date(), 0, Core.MAX_WINDOW_END_SECONDS), 3);
+  const choices = new Map();
   dates.forEach((date) => choices.set(date.dateKey, `Available now · ${formatReservationDate(date.dateKey)}`));
-  if (savedDate && !choices.has(savedDate)) choices.set(savedDate, formatReservationDate(savedDate));
+  choices.set(nextReleaseDate, `Next release · ${formatReservationDate(nextReleaseDate)}`);
   elements.targetDate.innerHTML = "";
   choices.forEach((label, value) => elements.targetDate.appendChild(new Option(label, value)));
   elements.targetDate.value = savedDate && choices.has(savedDate) ? savedDate : nextReleaseDate;
@@ -117,8 +146,15 @@ function updateSelectedDateBookingLimit() {
   if (!pageInfo) return;
   const targetDate = elements.targetDate.value;
   const targetDateCount = Core.countBookingsForDate(upcomingBookings, targetDate);
-  elements.pageState.textContent =
-    `Connected · ${eligibleCourtCount} allowed courts · ${targetDateCount}/${Core.UCSD_DAILY_BOOKING_LIMIT} detected on selected date`;
+  const simulatorLimitReached = pageInfo.environment === "simulator" &&
+    targetDateCount >= Core.UCSD_DAILY_BOOKING_LIMIT;
+  if (pageInfo.environment === "simulator") {
+    elements.start.disabled = simulatorLimitReached;
+    elements.arm.disabled = simulatorLimitReached;
+  }
+  elements.pageState.textContent = simulatorLimitReached
+    ? `Connected · ${targetDateCount}/${Core.UCSD_DAILY_BOOKING_LIMIT} booked · daily test limit reached`
+    : `Connected · ${eligibleCourtCount} allowed courts · ${targetDateCount}/${Core.UCSD_DAILY_BOOKING_LIMIT} detected on selected date`;
 }
 
 function readSettings() {
@@ -156,6 +192,21 @@ async function openAndLogin() {
   }
 }
 
+async function openTestSimulator() {
+  elements.openSimulator.disabled = true;
+  showStatus("Checking the local test simulator…");
+  try {
+    const response = await fetch(TEST_SIMULATOR_HEALTH_URL, { cache: "no-store" });
+    if (!response.ok) throw new Error(`Simulator returned HTTP ${response.status}.`);
+    await chrome.tabs.create({ url: TEST_SIMULATOR_URL });
+    window.close();
+  } catch (_error) {
+    showRunState("action");
+    showStatus("Test simulator is offline. Run npm run simulator in the project folder, then click Open Test Simulator again.", true);
+    elements.openSimulator.disabled = false;
+  }
+}
+
 async function armNextRelease() {
   try {
     if (!pageInfo) throw new Error("Open the UCSD tennis booking page and sign in first.");
@@ -169,10 +220,21 @@ async function armNextRelease() {
       when: nextWindow.getTime()
     });
     showRunState("armed");
-    showStatus(`Armed for ${nextWindow.toLocaleString()} to book a consecutive two-hour block on ${formatReservationDate(settings.targetDate)}.`);
+    const windowIsAlreadyOpen = nextWindow.getTime() - Date.now() < 1_000;
+    showStatus(windowIsAlreadyOpen
+      ? `The midnight window is open. Starting the court search now for ${formatReservationDate(settings.targetDate)}.`
+      : `Armed for ${nextWindow.toLocaleString()}. No availability checks will run before midnight. Then it will prefer your selected hours and try any consecutive two-hour fallback on ${formatReservationDate(settings.targetDate)}.`);
   } catch (error) {
     showStatus(error.message, true);
   }
+}
+
+async function startWatcher() {
+  if (pageInfo?.environment === "production") {
+    await armNextRelease();
+    return;
+  }
+  await startNow();
 }
 
 async function startNow() {
@@ -181,7 +243,7 @@ async function startNow() {
     const settings = readSettings();
     await saveUiSettings(settings);
     showRunState("watching");
-    showStatus("Searching for two consecutive hours on one court; nearby courts in the same North or Muir area are the fallback…");
+    showStatus("Searching selected hours first; if needed, trying any consecutive two-hour block on one court, then nearby courts in the same area…");
     await send({ type: "START_NOW", settings, bookingUrl: pageInfo.bookingUrl });
     window.close();
   } catch (error) {
@@ -241,7 +303,7 @@ async function initialize() {
 
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id || !/^https:\/\/rec\.ucsd\.edu\/booking\/[0-9a-f-]+\/?$/i.test(tab.url || "")) {
+    if (!tab?.id || !isSupportedBookingUrl(tab.url)) {
       throw new Error("Open the Tennis booking detail page, sign in, then reopen this popup.");
     }
     pageInfo = await chrome.tabs.sendMessage(tab.id, { type: "GET_PAGE_INFO" });
@@ -255,6 +317,10 @@ async function initialize() {
       window.close();
       return;
     }
+    if (!['production', 'simulator'].includes(pageInfo.environment)) {
+      throw new Error("This page is neither live UCSD Recreation nor the verified local simulator.");
+    }
+    renderEnvironment(pageInfo);
     renderDates(pageInfo.dates, stored.settings?.targetDate);
     upcomingBookings = pageInfo.upcomingBookings || [];
     renderUpcomingBookings(upcomingBookings);
@@ -271,8 +337,9 @@ async function initialize() {
 
 elements.arm.addEventListener("click", armNextRelease);
 elements.openLogin.addEventListener("click", openAndLogin);
+elements.openSimulator.addEventListener("click", openTestSimulator);
 elements.reviewCancellation.addEventListener("click", reviewCancellation);
-elements.start.addEventListener("click", startNow);
+elements.start.addEventListener("click", startWatcher);
 elements.stop.addEventListener("click", stop);
 elements.targetDate.addEventListener("change", updateSelectedDateBookingLimit);
 chrome.storage.onChanged.addListener((changes) => {

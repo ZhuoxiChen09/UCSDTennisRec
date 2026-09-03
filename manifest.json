@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "UCSD Tennis Court Watcher",
-  "version": "0.7.2",
+  "version": "0.8.8",
   "description": "Watches UCSD tennis availability and books an acceptable consecutive two-hour block using your signed-in session.",
   "icons": {
     "16": "icons/icon16.png",
@@ -16,7 +16,8 @@
     "tabs"
   ],
   "host_permissions": [
-    "https://rec.ucsd.edu/*"
+    "https://rec.ucsd.edu/*",
+    "http://127.0.0.1/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -43,7 +44,8 @@
     },
     {
       "matches": [
-        "https://rec.ucsd.edu/booking*"
+        "https://rec.ucsd.edu/booking*",
+        "http://127.0.0.1/booking*"
       ],
       "js": [
         "lib/booking-core.js",

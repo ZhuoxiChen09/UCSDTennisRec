@@ -1,10 +1,11 @@
 {
   "name": "ucsd-tennis-court-watcher",
-  "version": "0.7.2",
+  "version": "0.8.8",
   "private": true,
   "description": "Personal UCSD Recreation tennis court availability watcher Chrome extension",
   "scripts": {
+    "simulator": "node simulator/server.js",
     "test": "node --test",
-    "check": "node --check background.js && node --check content.js && node --check login.js && node --check popup.js && node --check lib/booking-core.js"
+    "check": "node --check background.js && node --check content.js && node --check login.js && node --check popup.js && node --check lib/booking-core.js && node --check simulator/server.js && node --check simulator/simulator.js"
   }
 }

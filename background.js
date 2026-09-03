@@ -1,9 +1,21 @@
 "use strict";
 
-const CONTENT_PROTOCOL_VERSION = 12;
+const CONTENT_PROTOCOL_VERSION = 17;
 const ALARM_NAME = "ucsd-tennis-next-release";
 const BOOKING_MATCH = "https://rec.ucsd.edu/booking/*";
 const REC_MATCH = "https://rec.ucsd.edu/*";
+const SIMULATOR_MATCH = "http://127.0.0.1/*";
+
+function isBookingUrl(value) {
+  return /^https:\/\/rec\.ucsd\.edu\/booking\/[0-9a-f-]+\/?$/i.test(value || "") ||
+    /^http:\/\/127\.0\.0\.1(?::\d+)?\/booking\/[0-9a-f-]+\/?$/i.test(value || "");
+}
+
+function tabQueryPatterns(preferredUrl) {
+  return /^http:\/\/127\.0\.0\.1(?::\d+)?\//i.test(preferredUrl || "")
+    ? [REC_MATCH, SIMULATOR_MATCH]
+    : [REC_MATCH];
+}
 
 function storageGet(keys) {
   return chrome.storage.local.get(keys);
@@ -28,7 +40,7 @@ function signInReturnsToBooking(tabUrl, preferredUrl) {
 }
 
 async function findBookingTab(preferredUrl) {
-  const tabs = await chrome.tabs.query({ url: REC_MATCH });
+  const tabs = await chrome.tabs.query({ url: tabQueryPatterns(preferredUrl) });
   const preferredTab = tabs.find((tab) => tab.url === preferredUrl);
   if (preferredTab) return preferredTab;
   const relatedSignInTab = tabs.find((tab) => signInReturnsToBooking(tab.url, preferredUrl));
@@ -104,6 +116,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "ARM") {
       await chrome.alarms.clear(ALARM_NAME);
       await chrome.alarms.create(ALARM_NAME, { when: message.when });
+      const windowIsAlreadyOpen = message.when - Date.now() < 1_000;
       await storageSet({
         pendingImmediateStart: false,
         pendingScheduledStart: false,
@@ -111,7 +124,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         bookingUrl: message.bookingUrl,
         status: versionedStatus({
           state: "armed",
-          message: `Armed for ${new Date(message.when).toLocaleString()}`,
+          message: windowIsAlreadyOpen
+            ? "The midnight window is open. Starting the court search now."
+            : `Armed for ${new Date(message.when).toLocaleString()}. No availability checks will run before midnight.`,
           updatedAt: Date.now(),
           scheduledFor: message.when
         })
@@ -150,7 +165,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     if (message.type === "OPEN_AND_LOGIN") {
       const bookingUrl = message.bookingUrl;
-      if (!/^https:\/\/rec\.ucsd\.edu\/booking\/[0-9a-f-]+\/?$/i.test(bookingUrl || "")) {
+      if (!isBookingUrl(bookingUrl)) {
         throw new Error("The tennis booking URL is invalid.");
       }
       await storageSet({ bookingUrl, autoLogin: message.autoLogin !== false });
@@ -177,7 +192,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       await storageSet({ pendingCancellationId: message.participantId, bookingUrl });
       const tab = await findBookingTab(bookingUrl);
       if (!tab?.id) throw new Error("Could not open your UCSD bookings.");
-      await chrome.tabs.update(tab.id, { active: true, url: "https://rec.ucsd.edu/booking" });
+      await chrome.tabs.update(tab.id, { active: true, url: new URL("/booking", bookingUrl).href });
       if (tab.windowId) await chrome.windows.update(tab.windowId, { focused: true });
       sendResponse({ ok: true });
       return;
@@ -218,7 +233,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     if (message.type === "STOP") {
       await chrome.alarms.clear(ALARM_NAME);
-      const tabs = await chrome.tabs.query({ url: BOOKING_MATCH });
+      const tabs = await chrome.tabs.query({ url: [BOOKING_MATCH, SIMULATOR_MATCH] });
       await Promise.all(tabs.map((tab) => tab.id
         ? chrome.tabs.sendMessage(tab.id, { type: "STOP_WATCH" }).catch(() => undefined)
         : undefined));
@@ -246,7 +261,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       const pair = Array.isArray(message.pair) ? message.pair : [message.match].filter(Boolean);
       const pairText = pair.map((match) => `${match.slotText} on ${match.court}`).join(" + ");
-      const title = message.autoBook ? "Booking a two-hour tennis block" : "Two-hour block available";
+      const environmentPrefix = message.environment === "simulator" ? "TEST · " : "LIVE UCSD · ";
+      const title = environmentPrefix + (message.autoBook ? "Booking a two-hour tennis block" : "Two-hour block available");
       const notificationId = `ucsd-tennis-${Date.now()}`;
       try {
         await chrome.notifications.create(notificationId, {
@@ -264,7 +280,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // Focusing the tab and the in-page alert remain as fallbacks.
       }
       await storageSet({
-        status: versionedStatus({ state: message.autoBook ? "booking" : "found", message: `${title}: ${pairText}`, pair, updatedAt: Date.now() })
+        status: versionedStatus({
+          state: message.autoBook ? "booking" : "found",
+          message: `${title}: ${pairText}`,
+          pair,
+          environment: message.environment,
+          testCase: message.testCase || null,
+          updatedAt: Date.now()
+        })
       });
       sendResponse({ ok: true });
       return;

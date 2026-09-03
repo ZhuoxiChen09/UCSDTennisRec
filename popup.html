@@ -16,18 +16,27 @@
   </header>
 
   <main>
+    <div id="environmentBanner" class="environment-banner" data-environment="checking">
+      <strong id="environmentLabel">Checking environment</strong>
+      <span id="testCaseLabel">Verifying this booking page…</span>
+    </div>
     <div class="status-strip">
       <span id="runState" class="run-state" data-state="idle">Idle</span>
       <span id="pageState">Checking the booking page…</span>
     </div>
 
     <div class="primary-controls" aria-label="Watcher controls">
-      <button id="start" class="start-button" type="button"><span aria-hidden="true">✓</span> Book 2 hours now</button>
+      <button id="start" class="start-button" type="button"><span aria-hidden="true">✓</span> <span id="startLabel">Start watcher</span></button>
       <button id="stop" class="stop-button" type="button"><span aria-hidden="true">■</span> Stop</button>
     </div>
 
     <button id="openLogin" class="login-button" type="button">
       <span aria-hidden="true">↗</span> Open UCSD Recreation &amp; continue with SSO
+    </button>
+    <button id="openSimulator" class="simulator-button" type="button">
+      <span aria-hidden="true">◉</span>
+      <span><strong>Open Test Simulator</strong><small>Local test bookings only</small></span>
+      <span aria-hidden="true">→</span>
     </button>
     <label class="login-option">
       <input id="autoLogin" type="checkbox" checked>
@@ -58,23 +67,24 @@
 
     <section>
       <div class="section-heading">
-        <h2>Acceptable one-hour slots</h2>
+        <h2>Preferred one-hour slots</h2>
         <span id="hourCount">choose consecutive hours</span>
       </div>
       <div id="hourList" class="hour-list" role="group" aria-label="Preferred one-hour time slots"></div>
+      <p class="fixed-window-note"><strong>Fallback:</strong> if none of these hours form a two-hour block, the watcher tries any other consecutive two-hour block. Same court remains the priority.</p>
     </section>
 
     <section class="schedule-card">
       <div class="section-heading">
         <h2>Midnight monitoring window</h2>
-        <span>fixed 10-minute limit</span>
+        <span>fixed 5-minute limit</span>
       </div>
-      <div class="fixed-window" aria-label="Monitoring runs from midnight until 12:10 AM">
+      <div class="fixed-window" aria-label="Monitoring runs from midnight until 12:05 AM">
         <div><span>Start</span><strong>12:00 AM</strong></div>
         <span class="window-arrow" aria-hidden="true">→</span>
-        <div><span>Hard stop</span><strong>12:10 AM</strong></div>
+        <div><span>Hard stop</span><strong>12:05 AM</strong></div>
       </div>
-      <p class="fixed-window-note">Checks one court every 3 seconds. It books only when two selected, consecutive hours form an acceptable pair.</p>
+      <p class="fixed-window-note"><strong>Start anytime:</strong> the live watcher stays armed without polling until 12:00:00 AM. It then checks one court every second through 12:05 AM, with one request in flight and automatic backoff.</p>
     </section>
 
     <section id="bookingTools" class="booking-tools" hidden>
@@ -89,9 +99,9 @@
 
     <div id="status" class="status" aria-live="polite"></div>
 
-    <button id="arm" class="arm-button" type="button">Book 2 hours at midnight</button>
+    <button id="arm" class="arm-button" type="button">Arm simulator for midnight</button>
 
-    <p class="safety">Clicking either Book 2 Hours button can create two real UCSD reservations. The extension confirms hour one before attempting hour two; if another player takes hour two in between, it reports the one-hour partial result and stops. UCSD Recreation remains the authority on account limits. Passwords, Duo, and final cancellation remain manual.</p>
+    <p id="safety" class="safety">The live watcher can be started early and makes no availability checks before midnight. Once the window opens, it can create two real UCSD reservations. Selected hours are preferred, but the extension may book any available consecutive two-hour block. UCSD Recreation remains the authority on account limits. Passwords, Duo, and final cancellation remain manual.</p>
   </main>
   <script src="lib/booking-core.js"></script>
   <script src="popup.js"></script>
