@@ -1,6 +1,6 @@
 {
   "name": "ucsd-tennis-court-watcher",
-  "version": "0.8.8",
+  "version": "0.8.9",
   "private": true,
   "description": "Personal UCSD Recreation tennis court availability watcher Chrome extension",
   "scripts": {

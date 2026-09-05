@@ -1,7 +1,7 @@
 "use strict";
 
-const BUILD_VERSION = "0.8.8";
-const CONTENT_PROTOCOL_VERSION = 17;
+const BUILD_VERSION = "0.8.9";
+const CONTENT_PROTOCOL_VERSION = 18;
 const Core = globalThis.UcsdBookingCore;
 const DEFAULT_BOOKING_URL = "https://rec.ucsd.edu/booking/9f19b678-58ce-4dfc-bd78-7166bde9e265";
 const TEST_SIMULATOR_URL = "http://127.0.0.1:4173/booking/9f19b678-58ce-4dfc-bd78-7166bde9e265";

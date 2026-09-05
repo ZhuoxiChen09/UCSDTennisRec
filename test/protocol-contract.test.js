@@ -105,6 +105,18 @@ test("live watcher uses a bounded one-second release window with server backoff"
   assert.match(popupHtml, /12:05 AM/);
 });
 
+test("a newly released live date refreshes before using UCSD's Book Now controls", () => {
+  const background = source("background.js");
+  const content = source("content.js");
+  assert.match(content, /context\.environment === "production" && !findDateButton\(selectedDate\)/);
+  assert.match(content, /type: "REFRESH_FOR_RELEASE"/);
+  assert.match(content, /if \(!dateButton\) return null/);
+  assert.match(background, /message\.type === "REFRESH_FOR_RELEASE"/);
+  assert.match(background, /chrome\.tabs\.reload\(tab\.id, \{ bypassCache: true \}\)/);
+  assert.match(content, /if \(options\.releaseRefreshAttempted\)/);
+  assert.match(background, /releaseRefreshTargetDate === settings\?\.targetDate/);
+});
+
 test("the live start button arms midnight without starting an early polling loop", () => {
   const background = source("background.js");
   const popup = source("popup.js");

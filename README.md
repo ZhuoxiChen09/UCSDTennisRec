@@ -19,6 +19,7 @@ There is no extension confirmation dialog after clicking a Book 2 Hours button; 
 - Uses one fixed midnight monitoring window: **12:00–12:05 AM**, with no editable start or stop controls.
 - Backs off before one retry when UCSD returns a rate limit, access error, or temporary server error.
 - Brings the booking tab forward, posts a desktop notification, selects each exact date/court/range, clicks **Book Now**, and confirms each reservation against UCSD's upcoming-bookings list before continuing.
+- When the watched date first appears in UCSD's fresh release response but is not yet present in the open page, refreshes that tab and resumes the same watch. This ensures the click uses UCSD's newly rendered date and live **Book Now** handler rather than a stale same-time button from the prior date.
 - Shows simulator reservations in a **Booked sessions** panel on the same test page. Cancelling there removes the test reservation and immediately returns that exact slot to availability.
 - Detects when an already-open UCSD tab is still running an older extension content script, reloads that tab automatically, and resumes the same Book 2 Hours request after the updated script is ready.
 - Detects when Chrome still has an older unpacked-extension runtime even though the popup files changed on disk. Opening the popup applies the new runtime automatically, then refreshes open UCSD booking tabs once.

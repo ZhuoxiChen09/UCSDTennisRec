@@ -1,6 +1,6 @@
 "use strict";
 
-const CONTENT_PROTOCOL_VERSION = 17;
+const CONTENT_PROTOCOL_VERSION = 18;
 const Core = globalThis.UcsdBookingCore;
 const BOOKING_PATH_RE = /^\/booking\/([0-9a-f-]+)\/?$/i;
 let watchController = null;
@@ -85,6 +85,12 @@ function parseDates(html) {
       dateText: button.dataset.dateText || ""
     }))
     .filter((date) => date.year && date.month && date.day);
+}
+
+function findDateButton(date) {
+  return [...document.querySelectorAll("button.single-date-select-one-click")]
+    .find((button) => Number(button.dataset.year) === date.year &&
+      Number(button.dataset.month) === date.month && Number(button.dataset.day) === date.day);
 }
 
 function parseFacilities(html) {
@@ -211,9 +217,11 @@ async function getPageInfo() {
 
 async function revealMatch(match, signal) {
   const [year, month, day] = match.dateKey.split("-").map(Number);
-  const dateButton = [...document.querySelectorAll("button.single-date-select-one-click")]
-    .find((button) => Number(button.dataset.year) === year &&
-      Number(button.dataset.month) === month && Number(button.dataset.day) === day);
+  const dateButton = findDateButton({ year, month, day });
+  // Availability is discovered from fresh partial responses, but UCSD's Book
+  // Now handler belongs to the live page. Never let a same-time button from a
+  // different, stale date satisfy this lookup.
+  if (!dateButton) return null;
   if (dateButton && dateButton.getAttribute("aria-current") !== "date") {
     dateButton.click();
     await sleep(700, signal);
@@ -438,7 +446,7 @@ async function maybeReviewCancellation() {
   setOverlay("error", "Cancellation unavailable", "The selected booking was not found. Reload the extension and try again.");
 }
 
-async function runWatch(settings, source) {
+async function runWatch(settings, source, options = {}) {
   const context = requireSupportedEnvironment();
   if (watchController) watchController.abort();
   watchController = new AbortController();
@@ -480,6 +488,24 @@ async function runWatch(settings, source) {
         const datesHtml = await fetchPartial(`/booking/${id}/dates`, signal);
         const dates = parseDates(datesHtml);
         selectedDate = dates.find((date) => Core.datePartsKey(date) === desired) || null;
+        if (selectedDate && context.environment === "production" && !findDateButton(selectedDate)) {
+          if (options.releaseRefreshAttempted) {
+            throw new Error(`${desired} was released, but UCSD still did not render that date after a fresh page load. The watcher stopped rather than clicking a different date.`);
+          }
+          await reportStatus(
+            "starting",
+            `${desired} is released. Refreshing the live booking page once so UCSD can attach its Book Now controls…`
+          );
+          const refresh = await chrome.runtime.sendMessage({
+            type: "REFRESH_FOR_RELEASE",
+            settings: config,
+            bookingUrl: location.href,
+            source,
+            targetDate: desired
+          }).catch(() => ({ ok: true, reloading: true }));
+          watchController = null;
+          return refresh || { ok: true, reloading: true };
+        }
       }
 
       if (!selectedDate) {
@@ -581,7 +607,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
   if (message.type === "START_WATCH") {
-    runWatch(message.settings, message.source).catch((error) => {
+    runWatch(message.settings, message.source, {
+      releaseRefreshAttempted: message.releaseRefreshAttempted === true
+    }).catch((error) => {
       reportStatus("error", error.message).catch(() => undefined);
     });
     sendResponse({ ok: true });

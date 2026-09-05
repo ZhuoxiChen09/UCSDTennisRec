@@ -1,6 +1,6 @@
 "use strict";
 
-const CONTENT_PROTOCOL_VERSION = 17;
+const CONTENT_PROTOCOL_VERSION = 18;
 const ALARM_NAME = "ucsd-tennis-next-release";
 const BOOKING_MATCH = "https://rec.ucsd.edu/booking/*";
 const REC_MATCH = "https://rec.ucsd.edu/*";
@@ -120,6 +120,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       await storageSet({
         pendingImmediateStart: false,
         pendingScheduledStart: false,
+        releaseRefreshTargetDate: null,
         settings: message.settings,
         bookingUrl: message.bookingUrl,
         status: versionedStatus({
@@ -141,7 +142,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         settings: message.settings,
         bookingUrl: message.bookingUrl,
         pendingImmediateStart: false,
-        pendingScheduledStart: false
+        pendingScheduledStart: false,
+        releaseRefreshTargetDate: null
       });
       const tab = sender.tab || await findBookingTab(message.bookingUrl);
       if (!tab || !tab.id) throw new Error("Open the UCSD tennis booking page first.");
@@ -160,6 +162,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       const result = await chrome.tabs.sendMessage(tab.id, { type: "START_WATCH", settings: message.settings, source: "manual" });
       sendResponse(result || { ok: true });
+      return;
+    }
+
+    if (message.type === "REFRESH_FOR_RELEASE") {
+      const tab = sender.tab;
+      if (!tab?.id || !isBookingUrl(tab.url) || tab.url !== message.bookingUrl) {
+        throw new Error("The released date was detected outside the active tennis booking page.");
+      }
+      const pendingKey = message.source === "schedule" ? "pendingScheduledStart" : "pendingImmediateStart";
+      await storageSet({
+        settings: message.settings,
+        bookingUrl: message.bookingUrl,
+        pendingImmediateStart: pendingKey === "pendingImmediateStart",
+        pendingScheduledStart: pendingKey === "pendingScheduledStart",
+        releaseRefreshTargetDate: message.targetDate,
+        status: versionedStatus({
+          state: "starting",
+          message: `${message.targetDate} is released. Refreshing the booking page before clicking UCSD's live Book Now control…`,
+          updatedAt: Date.now()
+        })
+      });
+      await chrome.tabs.reload(tab.id, { bypassCache: true });
+      sendResponse({ ok: true, reloading: true });
       return;
     }
 
@@ -203,21 +228,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: true, stale: true });
         return;
       }
-      const { pendingImmediateStart, pendingScheduledStart, settings, bookingUrl, status } = await storageGet([
+      const { pendingImmediateStart, pendingScheduledStart, releaseRefreshTargetDate, settings, bookingUrl, status } = await storageGet([
         "pendingImmediateStart",
         "pendingScheduledStart",
+        "releaseRefreshTargetDate",
         "settings",
         "bookingUrl",
         "status"
       ]);
       const tab = sender.tab;
+      const releaseRefreshAttempted = releaseRefreshTargetDate === settings?.targetDate;
       await storageSet({ lastSsoAttemptAt: 0 });
       if (pendingImmediateStart && settings && tab?.id && tab.url === bookingUrl) {
-        await chrome.tabs.sendMessage(tab.id, { type: "START_WATCH", settings, source: "manual" });
-        await storageSet({ pendingImmediateStart: false, pendingScheduledStart: false });
+        await storageSet({ pendingImmediateStart: false, pendingScheduledStart: false, releaseRefreshTargetDate: null });
+        await chrome.tabs.sendMessage(tab.id, {
+          type: "START_WATCH", settings, source: "manual", releaseRefreshAttempted
+        });
       } else if (pendingScheduledStart && settings && tab?.id && tab.url === bookingUrl) {
-        await chrome.tabs.sendMessage(tab.id, { type: "START_WATCH", settings, source: "schedule" });
-        await storageSet({ pendingScheduledStart: false });
+        await storageSet({ pendingScheduledStart: false, releaseRefreshTargetDate: null });
+        await chrome.tabs.sendMessage(tab.id, {
+          type: "START_WATCH", settings, source: "schedule", releaseRefreshAttempted
+        });
       } else if (status?.protocolVersion !== CONTENT_PROTOCOL_VERSION || status?.state === "starting") {
         await storageSet({
           status: versionedStatus({
@@ -240,6 +271,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       await storageSet({
         pendingImmediateStart: false,
         pendingScheduledStart: false,
+        releaseRefreshTargetDate: null,
         status: versionedStatus({ state: "stopped", message: "Watcher stopped.", updatedAt: Date.now() })
       });
       sendResponse({ ok: true });
