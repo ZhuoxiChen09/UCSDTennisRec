@@ -30,26 +30,30 @@ There is no extension confirmation dialog after clicking a Book 2 Hours button; 
 
 ## Install in Chrome
 
-1. Open `chrome://extensions`.
-2. Turn on **Developer mode**.
-3. Click **Load unpacked**.
-4. Select this folder:
+1. Get a local copy of this repository in any folder on your computer. Either use Git:
 
-   `C:\Users\chenz\OneDrive\Documents\ChatGPT\UCSDTennisRec`
+   ```powershell
+   git clone https://github.com/ZhuoxiChen09/UCSDTennisRec.git
+   ```
 
-5. Pin **UCSD Tennis Court Watcher** to the toolbar.
+   Or choose **Code → Download ZIP** on GitHub and extract the ZIP. Because the repository is private, you must be signed in to a GitHub account that has been granted access.
+2. Open `chrome://extensions`.
+3. Turn on **Developer mode**.
+4. Click **Load unpacked**.
+5. Select the local `UCSDTennisRec` folder that directly contains `manifest.json`. Its parent path can be anywhere; it does not need to match the original developer's folder structure.
+6. Pin **UCSD Tennis Court Watcher** to the toolbar.
 
 For later local updates, open the popup once. If Chrome is still running an older build, the popup closes while the extension reloads and the UCSD booking tab refreshes. Reopen the popup after that one-time refresh; the old stored error is discarded automatically.
 
-## Install on another laptop
+## Update an existing installation
 
-Sign in to the same GitHub account, then either download the repository ZIP from GitHub or clone it:
+If you cloned with Git, open a terminal inside your local `UCSDTennisRec` folder and run:
 
 ```powershell
-gh repo clone ZhuoxiChen09/UCSDTennisRec
+git pull
 ```
 
-On that laptop, open `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and select the cloned `UCSDTennisRec` folder. To receive later updates, run `git pull` inside that folder and click **Reload** for the extension in Chrome.
+Then open `chrome://extensions` and click **Reload** for **UCSD Tennis Court Watcher**. If you installed from a ZIP, download the latest ZIP, extract it to a stable folder, use **Load unpacked** on that new folder, and remove the older unpacked entry after confirming the new version loads.
 
 ## Test anytime with the local court simulator
 
